@@ -66,7 +66,9 @@ def create_post_message(video_data: list):
 
 def schedule_mastodon_post(message, scheduled_time_utc):
     scheduled_time = datetime.fromtimestamp(scheduled_time_utc, tz=timezone.utc)
-    mastodon.status_post(message, scheduled_at=scheduled_time, visibility='private') # TODO switch to public
+    response = mastodon.status_post(message, scheduled_at=scheduled_time, visibility='public')
+
+    return response.id
 
 def bulk_post_to_mastodon(num_posts, scheduled_time: datetime):
     for i in range(num_posts):
@@ -74,8 +76,8 @@ def bulk_post_to_mastodon(num_posts, scheduled_time: datetime):
         message = create_post_message(random_video)
 
         scheduled_time_utc = int(scheduled_time.timestamp())
-        schedule_mastodon_post(message, scheduled_time_utc)
-        add_schedule_row(random_video[4], scheduled_time)
+        post_id = schedule_mastodon_post(message, scheduled_time_utc)
+        add_schedule_row(random_video[4], post_id, scheduled_time)
 
         print(f'Post {i + 1} scheduled on Mastodon for {str(scheduled_time)[:-9]}.')
         
@@ -99,7 +101,7 @@ def get_base_scheduled_time():
         return scheduled_time + timedelta(days=1) if (scheduled_time - current_time).total_seconds() <= 0 else scheduled_time
     
     prev_scheduled_time = selected_timezone.localize(
-        datetime.strptime(rows[0].winfo_children()[1].cget("text"), "%Y-%m-%d %H:%M" if am_pm_combo.get() == "24 hr" else "%Y-%m-%d %I:%M %p")
+        datetime.strptime(rows[-1].winfo_children()[2].cget("text"), "%Y-%m-%d %H:%M" if am_pm_combo.get() == "24 hr" else "%Y-%m-%d %I:%M %p")
     )
     
     scheduled_time = prev_scheduled_time.replace(hour=hour, minute=minute, second=0)
@@ -110,33 +112,121 @@ def get_base_scheduled_time():
 def last_day_of_month(date: datetime):
     return date.replace(day=calendar.monthrange(date.year, date.month)[1])
 
-def add_schedule_row(title, schedule_time: datetime, initializing=False):
-    if not initializing:
-        for row in schedule_rows_frame.winfo_children():
-            row.grid_configure(row=row.grid_info()["row"] + 1)
+def init_schedule_rows(rows: list[dict[str, any]]):
+    """Initialize the schedule display with a list of rows sorted from oldest to newest."""
+    
+    # The rows here are added to the display such a way
+    # that the latest sheduled posts appear at the top
+    # while the order in scheduled_rows_frame.winfo_children()
+    # is oldest first latest last
+    # This is important because newly scheduled rows are added only to the
+    # end of the list meaning the way the latest row is accessed would
+    # otherwise differ between the initialization and normal phases
+
+    if len(rows) == 0:
+        return
+
+    schedule_data = []
+
+    now = datetime.now(tz=pytz.timezone(timezone_combo.get())) # TODO adjust for currently selected time
+
+    gap_amount = (rows[0]["scheduled_time"] - now).days
+
+    for i in range(len(rows) - 1):
+        if gap_amount > 1:
+            schedule_data.append(gap_amount - 1)
+
+        schedule_data.append(rows[i])
+
+        gap_amount = (rows[i + 1]["scheduled_time"] - rows[i]["scheduled_time"]).days
+
+    if gap_amount - 1 > 1:
+        schedule.append(gap_amount - 1)
+
+    schedule_data.append(rows[-1])
+
+    row_index = len(schedule_data)
+
+    for data in schedule_data:
+        row_index -= 1
+
+        if isinstance(data, int):
+            frame = tk.Frame(schedule_rows_frame, highlightbackground="gray", highlightthickness=1, pady=5)
+            tk.Label(frame, text=f"{data} day gap").pack()
+            frame.grid(row=row_index, sticky="ew")
+            continue
+
+        frame = tk.Frame(schedule_rows_frame, highlightbackground="gray", highlightthickness=1, pady=5)
+        frame.grid(row=row_index, sticky="ew")
+
+        title_label = tk.Label(frame, text=data["title"], width=20, wraplength=150)
+        title_label.pack(side="left")
+
+        id_label = tk.Label(frame, text=data["post_id"], width=5)
+        id_label.pack(side="left", padx=5)
+        
+        time_label = tk.Label(frame, width=18, text =
+            data["scheduled_time"].strftime("%Y-%m-%d %I:%M %p") if am_pm_combo.get() != "24 hr" else data["scheduled_time"].strftime("%Y-%m-%d %H:%M")
+        )
+        time_label.pack(side="left", padx=5)
+
+        regenerate_button = tk.Button(frame, text="Re-Roll", command=lambda: print("wip"), state=tk.DISABLED)
+        regenerate_button.pack(side="left", padx=5)
+        
+        remove_button = tk.Button(frame, text="Remove", command=lambda row=frame: remove_row(row))
+        remove_button.pack(side="left", padx=5)
+
+def add_schedule_row(title, post_id, schedule_time: datetime):
+    for row in schedule_rows_frame.winfo_children():
+        row.grid_configure(row=row.grid_info()["row"] + 1)
         
     row_frame = tk.Frame(schedule_rows_frame, highlightbackground="gray", highlightthickness=1, pady=5)
-    row_frame.grid(row=len(schedule_rows_frame.winfo_children()) - 1 if initializing else 0)
+    row_frame.grid(row=0, sticky="ew")
     
     title_label = tk.Label(row_frame, text=title, width=20, wraplength=150)
     title_label.pack(side="left")
 
-    label_text = schedule_time.astimezone(tz=pytz.timezone(timezone_combo.get()))
-    label_text = label_text.strftime("%Y-%m-%d %I:%M %p") if am_pm_combo.get() != "24 hr" else label_text.strftime("%Y-%m-%d %H:%M")
+    id_label = tk.Label(row_frame, text=post_id, width=5)
+    id_label.pack(side="left", padx=5)
+
+    time_label_text = schedule_time.astimezone(tz=pytz.timezone(timezone_combo.get()))
+    time_label_text = time_label_text.strftime("%Y-%m-%d %I:%M %p") if am_pm_combo.get() != "24 hr" else time_label_text.strftime("%Y-%m-%d %H:%M")
     
-    time_label = tk.Label(row_frame, text=label_text, width=25)
+    time_label = tk.Label(row_frame, text=time_label_text, width=18)
     time_label.pack(side="left", padx=5)
 
     regenerate_button = tk.Button(row_frame, text="Re-Roll", command=lambda: print("wip"))
     regenerate_button.pack(side="left", padx=5)
     
-    remove_button = tk.Button(row_frame, text="Remove", command=lambda: remove_row(row_frame))
+    remove_button = tk.Button(row_frame, text="Remove", command=lambda row=row_frame: remove_row(row))
     remove_button.pack(side="left", padx=5)
 
 def ordinal_suffix(num):
     suffixes = {1: 'st', 2: 'nd', 3: 'rd'}
 
     return 'th' if 11 <= num <= 13 else suffixes.get(num % 10, 'th')
+
+def update_gap(gap: tk.Frame, second_gap: tk.Frame = None):
+    gap_days = int(gap.winfo_children()[0].cget("text").split(" ")[0])
+
+    if second_gap:
+        gap2_days = int(second_gap.winfo_children()[0].cget("text").split(" ")[0])
+        return gap.winfo_children()[0].config(text=f"{gap_days + 1 + gap2_days} day gap")
+    
+    gap.winfo_children()[0].config(text=f"{gap_days + 1} day gap")
+
+def fix_row_nums(row_index, rows_destroyed=1):
+    rows = schedule_rows_frame.winfo_children()
+
+    for i in range(row_index):
+        rows[i].grid_configure(row=len(rows) - i - rows_destroyed)
+
+def create_gap(row: tk.Frame):
+    for child in row.winfo_children(): # RIP childs
+        child.destroy()
+    
+    label = tk.Label(row, text="1 day gap")
+    label.pack()
 
 # Tkinter UI functions
 def generate_posts():
@@ -151,13 +241,14 @@ def generate_posts():
     if time_units == "weeks":
         num_posts *= 7
     elif time_units == "*months":
-        end_date = last_day_of_month(datetime + relativedelta(months=num_posts))
+        end_date = last_day_of_month(base_time + relativedelta(months=num_posts - 1))
         num_posts = (end_date - base_time).days + 1
 
-    generate_button["state"] = "disabled"
+    generate_button["state"] = tk.DISABLED
 
     def run_generate_posts():
         bulk_post_to_mastodon(num_posts, base_time)
+        posts_entry_updated(None)
         generate_button["state"] = "normal"
 
     generation_thread = threading.Thread(target=run_generate_posts)
@@ -216,9 +307,53 @@ def posts_entry_updated(e):
         text=f"Scheduling from {base_time.strftime("%b")} {base_time.day}{ordinal_suffix(base_time.day)} to {to.strftime("%b")} {to.day}{ordinal_suffix(to.day)}"
     )
 
-def remove_row(row: tk.Frame): # TODO
-    mastodon.scheduled_status_delete(row.winfo_children())
-    row.destroy()
+def remove_row(row: tk.Frame):
+    schedule_rows = schedule_rows_frame.winfo_children()
+    row_count = len(schedule_rows)
+
+    # Weird index since first row is last child and last row is first child
+    # due to reversed insertion order
+    row_index = row_count - row.grid_info()["row"] - 1
+    
+    mastodon.scheduled_status_delete(row.winfo_children()[1].cget("text"))
+    
+    if row_count == 1:
+        return row.destroy()
+
+    if row_index + 1 == len(schedule_rows): # First row     
+        row.destroy()   
+        gap_below = len(schedule_rows[row_index - 1].winfo_children()) == 1
+
+        if gap_below:
+            schedule_rows[row_index - 1].destroy()
+
+        if row_count == 2: return
+        
+        return fix_row_nums(row_index, 2 if gap_below else 1)
+
+    elif row_index == 0: # Last row
+        if len(schedule_rows[1].winfo_children()) == 1:
+            update_gap(schedule_rows[row_index - 1])
+            row.destroy()
+        else:
+            create_gap(row)
+        return
+
+
+    lower_gap, upper_gap = len(schedule_rows[row_index - 1].winfo_children()) == 1, len(schedule_rows[row_index + 1].winfo_children()) == 1
+    
+    if upper_gap and lower_gap:
+       update_gap(schedule_rows[row_index - 1], schedule_rows[row_index + 1])
+       schedule_rows[row_index + 1].destroy()
+       row.destroy()
+       return fix_row_nums(row_index, 2)
+    
+    if not (upper_gap or lower_gap):
+        return create_gap(row)
+    else:
+        update_gap(schedule_rows[row_index + (1 if upper_gap else -1)])
+        row.destroy()
+        fix_row_nums(row_index)
 
 def changed_timezone(e):
     global prev_selected_tz
@@ -229,8 +364,12 @@ def changed_timezone(e):
     hr_24 = am_pm_combo.get() == "24 hr"
 
     for row in schedule_rows_frame.winfo_children():
-        old_time = prev_tz.localize(datetime.strptime(row.winfo_children()[1].cget("text"), "%Y-%m-%d %H:%M" if hr_24 else "%Y-%m-%d %I:%M %p"))
-        row.winfo_children()[1].config(text=old_time.astimezone(selected_tz).strftime("%Y-%m-%d %H:%M" if hr_24 else "%Y-%m-%d %I:%M %p"))
+        data = row.winfo_children()
+
+        if len(data) == 1: continue
+
+        old_time = prev_tz.localize(datetime.strptime(data[2].cget("text"), "%Y-%m-%d %H:%M" if hr_24 else "%Y-%m-%d %I:%M %p"))
+        data[2].config(text=old_time.astimezone(selected_tz).strftime("%Y-%m-%d %H:%M" if hr_24 else "%Y-%m-%d %I:%M %p"))
     
     prev_selected_tz = timezone_combo.get()
 
@@ -243,8 +382,12 @@ def changed_hour_type(e):
     prev_hr_24, curr_hr_24 = prev_selected_hr_type == "24 hr", am_pm_combo.get() == "24 hr"
 
     for row in schedule_rows_frame.winfo_children():
-        old_time = datetime.strptime(row.winfo_children()[1].cget("text"), "%Y-%m-%d %H:%M" if prev_hr_24 else "%Y-%m-%d %I:%M %p")
-        row.winfo_children()[1].config(text=old_time.strftime("%Y-%m-%d %H:%M" if curr_hr_24 else "%Y-%m-%d %I:%M %p"))
+        data = row.winfo_children()
+
+        if len(data) == 1: continue
+
+        old_time = datetime.strptime(data[2].cget("text"), "%Y-%m-%d %H:%M" if prev_hr_24 else "%Y-%m-%d %I:%M %p")
+        data[2].config(text=old_time.strftime("%Y-%m-%d %H:%M" if curr_hr_24 else "%Y-%m-%d %I:%M %p"))
     
     prev_selected_hr_type = am_pm_combo.get()
 
@@ -258,6 +401,7 @@ def on_frame_configure(e):
 
 # UI Window
 root = tk.Tk()
+root.geometry("625x650")
 root.title("Mastodon Post Generator")
 
 posts_label = tk.Label(root, text="Schedule videos for the next:")
@@ -322,10 +466,10 @@ timezone_combo.pack()
 generate_button = tk.Button(root, text="Generate Posts", command=generate_posts)
 generate_button.pack(pady=10)
 
-scroll_frame = tk.Frame(root)
-scroll_frame.pack(pady=10, padx=10, fill="y", expand=True)
+scroll_frame = tk.Frame(root, borderwidth=5, highlightthickness=2, highlightbackground="gray")
+scroll_frame.pack(fill="y", expand=True)
 
-canvas = tk.Canvas(scroll_frame, height=300, width=460)
+canvas = tk.Canvas(scroll_frame, height=300, width=465)
 canvas.pack(side="left", fill="both", expand=True)
 
 schedule_rows_frame = tk.Frame(canvas)
@@ -337,13 +481,36 @@ scrollbar.pack(side="right", fill="y")
 canvas.create_window((0, 0), window=schedule_rows_frame, anchor="nw")
 canvas.configure(yscrollcommand=scrollbar.set)
 
-for post in mastodon.scheduled_statuses():
-    add_schedule_row(post.params.text.split(": \"", 1)[1].split("\" from \"" ,1)[0], post.scheduled_at, True)
+auth_header = {"Authorization": f"Bearer {access_token}"}
+response = requests.get(f"https://{instance_url}/api/v1/scheduled_statuses?limit=40&max_id=999999", headers=auth_header)
+schedule_chunk = response.json()
+
+# Having the actul schedule may make some previous
+# code getting data from the rows redundant
+# Might revisit later
+schedule: list = schedule_chunk
+
+temp_timezone = pytz.timezone(prev_selected_tz)
+
+while len(schedule_chunk) == 40:
+    response = requests.get(response.links["next"]["url"], headers=auth_header)
+    schedule_chunk = response.json()
+    schedule.extend(schedule_chunk)
+
+init_schedule_rows([
+    {
+        "title": post["params"]["text"].split(": \"", 1)[1].split("\" from \"" ,1)[0],
+        "post_id": post["id"],
+        "scheduled_time": temp_timezone.localize(datetime.strptime(post["scheduled_at"], "%Y-%m-%dT%H:%M:%S.%fZ"))
+    } for post in schedule[::-1]
+])
+
+del temp_timezone
 
 if len(schedule_rows_frame.winfo_children()):
     hr_24 = am_pm_combo.get() == "24 hr";
 
-    date = datetime.strptime(schedule_rows_frame.winfo_children()[0].winfo_children()[1].cget("text"), "%Y-%m-%d %H:%M" if am_pm_combo.get() == "24 hr" else "%Y-%m-%d %I:%M %p")
+    date = datetime.strptime(schedule_rows_frame.winfo_children()[-1].winfo_children()[2].cget("text"), "%Y-%m-%d %H:%M" if am_pm_combo.get() == "24 hr" else "%Y-%m-%d %I:%M %p")
     hour_entry.delete(0, tk.END)
 
     if hr_24:
@@ -361,9 +528,11 @@ posts_entry_updated(None)
 root.mainloop()
 
 # TODO
-# regenerate - copy id from row, delete it, then schedule a new one at the same date
+# Re-roll - unschedule row's video, then schedule a new one at the same date and replace row data
 # not available if it's scheduled within 5 minutes in the future
 
-# Delete - remove data from row, unschedule by id, instead show time period of no scheduled vids
-# if adjacent to another unscheduled row, add their time periods and combine
-# Each unscheduled time period row will have a generate button to fill in the gap with random vids
+# Each unscheduled time period row should have a generate button to fill in the gap with random vids
+
+# When creating a gap for the bottom entry in the schedule, take selected time into consideration for displaying gap length
+
+# Display rate limit counter and time until refresh, allow much quicker scheduling up until the limit is reached
