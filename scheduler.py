@@ -7,8 +7,9 @@ from mastodon import Mastodon #mastodon post gen
 import os # dot environment variables
 from dotenv import load_dotenv #dot environment variables
 import calendar #displaying month as name
+from constants import ArchiveIndices as ARC_I, ScheduleIndices as SCH_I
 import tkinter as tk #UI
-from tkinter import messagebox, simpledialog, ttk #UI
+from tkinter import ttk #UI
 import threading #UI
 import pytz  #timezone handling
 import io
@@ -170,8 +171,8 @@ def init_schedule_rows(rows: list[dict[str, any]]):
         )
         time_label.pack(side="left", padx=5)
 
-        regenerate_button = tk.Button(frame, text="Re-Roll", command=lambda: print("wip"), state=tk.DISABLED)
-        regenerate_button.pack(side="left", padx=5)
+        reroll_button = tk.Button(frame, text="Re-Roll", command=lambda row=frame: reroll(row), state=tk.DISABLED)
+        reroll_button.pack(side="left", padx=5)
         
         remove_button = tk.Button(frame, text="Remove", command=lambda row=frame: remove_row(row))
         remove_button.pack(side="left", padx=5)
@@ -195,8 +196,8 @@ def add_schedule_row(title, post_id, schedule_time: datetime):
     time_label = tk.Label(row_frame, text=time_label_text, width=18)
     time_label.pack(side="left", padx=5)
 
-    regenerate_button = tk.Button(row_frame, text="Re-Roll", command=lambda: print("wip"))
-    regenerate_button.pack(side="left", padx=5)
+    reroll_button = tk.Button(row_frame, text="Re-Roll", command=lambda row=row_frame: reroll(row), state=tk.DISABLED)
+    reroll_button.pack(side="left", padx=5)
     
     remove_button = tk.Button(row_frame, text="Remove", command=lambda row=row_frame: remove_row(row))
     remove_button.pack(side="left", padx=5)
@@ -215,11 +216,12 @@ def update_gap(gap: tk.Frame, second_gap: tk.Frame = None):
     
     gap.winfo_children()[0].config(text=f"{gap_days + 1} day gap")
 
-def fix_row_nums(row_index, rows_destroyed=1):
+def fix_row_nums(row_index):
     rows = schedule_rows_frame.winfo_children()
 
     for i in range(row_index):
-        rows[i].grid_configure(row=len(rows) - i - rows_destroyed)
+        # - 1 since rows is already shortened by having them being destroyed
+        rows[i].grid_configure(row=len(rows) - i - 1)
 
 def create_gap(row: tk.Frame):
     for child in row.winfo_children(): # RIP childs
@@ -329,7 +331,7 @@ def remove_row(row: tk.Frame):
 
         if row_count == 2: return
         
-        return fix_row_nums(row_index, 2 if gap_below else 1)
+        return fix_row_nums(row_index - 1 if gap_below else row_index)
 
     elif row_index == 0: # Last row
         if len(schedule_rows[1].winfo_children()) == 1:
@@ -346,7 +348,7 @@ def remove_row(row: tk.Frame):
        update_gap(schedule_rows[row_index - 1], schedule_rows[row_index + 1])
        schedule_rows[row_index + 1].destroy()
        row.destroy()
-       return fix_row_nums(row_index, 2)
+       return fix_row_nums(row_index)
     
     if not (upper_gap or lower_gap):
         return create_gap(row)
@@ -398,6 +400,20 @@ def select_all(e: tk.Event):
 def on_frame_configure(e):
     canvas.configure(scrollregion=canvas.bbox("all"))
 
+def reroll(row: tk.Frame):
+    if not archive:
+        fetch_archive()
+    
+    widgets = row.winfo_children()
+    mastodon.scheduled_status_delete(widgets[SCH_I.ID].cget("text"))
+    random_video = random.choice(archive)
+    message = create_post_message(random_video)
+    scheduled_time = datetime.strptime(widgets[SCH_I.TIMESTAMP].cget("text"), "%Y-%m-%d %H:%M" if am_pm_combo.get() == "24 hr" else "%Y-%m-%d %I:%M %p")
+
+    new_id = schedule_mastodon_post(message, int(scheduled_time.timestamp()))
+
+    widgets[SCH_I.TITLE].config(text=random_video[ARC_I.TITLE])
+    widgets[SCH_I.ID].config(text=new_id)
 
 # UI Window
 root = tk.Tk()
@@ -501,7 +517,7 @@ init_schedule_rows([
     {
         "title": post["params"]["text"].split(": \"", 1)[1].split("\" from \"" ,1)[0],
         "post_id": post["id"],
-        "scheduled_time": temp_timezone.localize(datetime.strptime(post["scheduled_at"], "%Y-%m-%dT%H:%M:%S.%fZ"))
+        "scheduled_time": pytz.utc.localize(datetime.strptime(post["scheduled_at"], "%Y-%m-%dT%H:%M:%S.%fZ")).astimezone(temp_timezone)
     } for post in schedule[::-1]
 ])
 
