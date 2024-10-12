@@ -1,2 +1,5 @@
 python-dotenv
 mastodon.py
+pytz
+python-dateutil
+tkcalendar
