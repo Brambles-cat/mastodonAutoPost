@@ -48,8 +48,8 @@ def fetch_schedules(selected_timezone):
         response = requests.get(response.links["next"]["url"], headers=auth_header)
         schedule_chunk = response.json()
         schedule.extend(schedule_chunk)
-    
-    # TODO schedule = sort(schedule) by date
+
+    schedule.sort(key=lambda entry: entry["scheduled_at"], reverse=True)
 
     daily_t10_indicator = "The randomly selected top pony video of the day is"
     

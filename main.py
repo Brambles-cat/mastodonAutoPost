@@ -77,10 +77,6 @@ visibility_button.pack()
 root.mainloop()
 
 # TODO
-# Each unscheduled time period row should have a generate button to fill in the gap with random vids
-
-# When creating a gap for the bottom entry in the schedule, take selected time into consideration for displaying gap length
-
 # Display rate limit counter and time until refresh, allow much quicker scheduling up until the limit is reached
 
 # Highlighting pattern to indicate when rows have multiple videos scheduled on the same day
@@ -93,8 +89,6 @@ root.mainloop()
 # Display pub/priv visibility on schedule rows with an option to change (delete then reschedule with changed setting)
 
 # For genreral scheduling, add emoji support, other visibility options, media attachments, sensitivity option, maybe even custom emoji
-
-# Sort schedules in fetch_schedules by date
 
 # Switch id and content positions in schedule rows and allow more space for long content posts
 

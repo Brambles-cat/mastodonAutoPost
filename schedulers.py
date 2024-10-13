@@ -116,9 +116,11 @@ class Scheduler:
             rows[i].grid_configure(row=len(rows) - i - 1)
 
     def _schedule_mastodon_post(self, message, scheduled_time: datetime):
-        response = self.mastodon.status_post(message, scheduled_at=scheduled_time, visibility=data.visibility)
-
-        return response.id
+        """Schedule a mastodon status using the api wrapper and return the status' id"""
+        
+        return str(self.mastodon.status_post(
+            message, scheduled_at=scheduled_time, visibility=data.visibility
+        ).id)
     
     def _clamp_min(self, e):
         minutes = self.minute_entry.get()
@@ -197,9 +199,10 @@ class DailyT10Scheduler(Scheduler):
         # due to reversed insertion order
         row_index = row_count - row.grid_info()["row"] - 1
         post_id = row.winfo_children()[1].cget("text")
+        schedule_index = next(i for i, entry in enumerate(data.schedules["DailyT10"]) if entry["post_id"] == post_id)
         
         self.mastodon.scheduled_status_delete(post_id)
-        del data.schedules["DailyT10"][row_index - len([row for row in schedule_rows if len(row.winfo_children()) == IND.GAP_CHILD_COUNT])]
+        del data.schedules["DailyT10"][schedule_index]
         
         if row_count == 1:
             row.destroy()
@@ -273,6 +276,8 @@ class DailyT10Scheduler(Scheduler):
         )
 
     def _update_gap(self, gap: tk.Frame, second_gap: tk.Frame = None):
+        """Increase the amount of time that a gap is by 1 and add the second gaps days if
+        a row in a [gap row gap] sequence is removed"""
         gap_days = int(gap.winfo_children()[0].cget("text").split(" ")[0])
 
         if second_gap:
@@ -282,7 +287,44 @@ class DailyT10Scheduler(Scheduler):
         gap.winfo_children()[0].config(text=f"{gap_days + 1} day gap")
 
     def _fill_gap(self, gap: tk.Frame):
-        pass
+        """Replace a gap row with new entries of scheduled videos for the amount of days in the gap"""
+
+        if not data.archive:
+            data.fetch_archive()
+
+        upper_row_index = next(i for i, entry in enumerate(self.schedule_rows_frame.winfo_children()) if entry == gap) + 1
+        gap_length = int(gap.winfo_children()[0].cget("text").split(" ")[0])
+
+        hour = int(self.hour_entry.get())
+        hour = (hour % 12) + 12 if self.am_pm_combo.get() == "PM" else hour % 12 if self.am_pm_combo.get() == "AM" else hour
+
+        reference_components = self.schedule_rows_frame.winfo_children()[upper_row_index].winfo_children()
+        ref_post_id = reference_components[SCH_I.ID].cget("text")
+
+        ref_date = datetime.strptime(reference_components[SCH_I.TIMESTAMP].cget("text").split(" ")[0], "%Y-%m-%d")
+        ref_date = ref_date.replace(hour=hour, minute=int(self.minute_entry.get()))
+        ref_date = pytz.timezone(self.timezone_combo.get()).localize(ref_date)
+
+        schedule_index = next(i for i, entry in enumerate(data.schedules["DailyT10"]) if entry["post_id"] == ref_post_id)
+
+        for i in range(1, gap_length + 1):
+            new_date = ref_date - timedelta(days=i)
+            random_video = random.choice(data.archive)
+            message = self._create_post_message(random_video)
+            post_id = self._schedule_mastodon_post(message, new_date)
+
+            data.schedules["DailyT10"].insert(schedule_index, {
+                "title":  random_video[ARC_I.TITLE],
+                "post_id": post_id,
+                "scheduled_time": ref_date - timedelta(days=i)
+            })
+
+        # This is necessary since the ordering of winfo_children() can't be changed
+        # and new entries would've been added to the end instead of wherever the gap was
+        for row in self.schedule_rows_frame.winfo_children():
+            row.destroy()
+
+        self._init_schedule_rows(data.schedules["DailyT10"])
 
     def _init_schedule_rows(self, rows: list[dict[str, any]]):
         """Initialize the schedule display with a list of rows sorted from oldest to newest."""
@@ -298,12 +340,18 @@ class DailyT10Scheduler(Scheduler):
         if len(rows) == 0:
             return
 
-        schedule_data = []
-
-        now = datetime.now(tz=pytz.timezone(self.timezone_combo.get())) # TODO adjust for currently selected time
+        hour = int(self.hour_entry.get())
+        hour = (hour % 12) + 12 if self.am_pm_combo.get() == "PM" else hour % 12 if self.am_pm_combo.get() == "AM" else hour
         selected_timezone = pytz.timezone(self.timezone_combo.get())
+        
+        now = datetime.now(tz=pytz.timezone(self.timezone_combo.get()))
+        scheduled_today = now.replace(hour=hour, minute=int(self.minute_entry.get()))
 
-        gap_amount = (rows[0]["scheduled_time"] - now).days
+        initial_dif: timedelta = rows[0]["scheduled_time"] - now
+        gap_amount = initial_dif.days + (1 if initial_dif.seconds > 0 else 0)
+        gap_amount += 1 if now < scheduled_today and (scheduled_today - now).seconds > 300 else 0
+
+        schedule_data = []
 
         for i in range(len(rows) - 1):
             if gap_amount > 1:
@@ -494,27 +542,25 @@ class DailyT10Scheduler(Scheduler):
         self.generate_button = tk.Button(ui_container, text="Generate Posts", command=self._generate_posts)
         self.generate_button.pack(pady=10)
 
-        self._init_schedule_rows_frame(ui_container)
-
-        self._init_schedule_rows(data.schedules["DailyT10"])
-        
         # Make the input fields' initial values match those of the latest scheduled item
-        if len(self.schedule_rows_frame.winfo_children()):
+        if len(data.schedules["DailyT10"]):
             hr_24 = self.am_pm_combo.get() == "24 hr";
 
-            date = datetime.strptime(self.schedule_rows_frame.winfo_children()[-1].winfo_children()[2].cget("text"), "%Y-%m-%d %H:%M" if self.am_pm_combo.get() == "24 hr" else "%Y-%m-%d %I:%M %p")
+            latest_date = data.schedules["DailyT10"][-1]["scheduled_time"].astimezone(pytz.timezone(self.timezone_combo.get()))
             self.hour_entry.delete(0, tk.END)
 
             if hr_24:
-                self.hour_entry.insert(0, f"0{date.hour}" if date.hour < 10 else date.hour)
+                self.hour_entry.insert(0, f"0{latest_date.hour}" if latest_date.hour < 10 else latest_date.hour)
             else:
-                self.am_pm_combo.set("AM" if date.hour < 12 else "PM")
-                hr_12 = 12 if date.hour == 0 else date.hour if date.hour <= 12 else date.hour - 12
+                self.am_pm_combo.set("AM" if latest_date.hour < 12 else "PM")
+                hr_12 = 12 if latest_date.hour == 0 else latest_date.hour if latest_date.hour <= 12 else latest_date.hour - 12
                 self.hour_entry.insert(0, f"0{hr_12}" if hr_12 < 10 else hr_12)
 
             self.minute_entry.delete(0, tk.END)
-            self.minute_entry.insert(0, f"0{date.minute}" if date.minute < 10 else date.minute)
+            self.minute_entry.insert(0, f"0{latest_date.minute}" if latest_date.minute < 10 else latest_date.minute)
 
+        self._init_schedule_rows_frame(ui_container)
+        self._init_schedule_rows(data.schedules["DailyT10"])
         self._posts_entry_updated(None)
 
 
