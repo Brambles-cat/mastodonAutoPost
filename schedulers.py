@@ -1,6 +1,6 @@
 import random, time, calendar, pytz, threading, data
 from dateutil.relativedelta import relativedelta
-from datetime import datetime, timedelta, timezone, date, time as dt_time
+from datetime import datetime, timedelta, date, time as dt_time
 from data import ArchiveIndices as ARC_I, ScheduleIndices as SCH_I, Indicators as IND
 from data import default_tz, default_hr_type
 from mastodon import Mastodon
@@ -55,12 +55,12 @@ class Scheduler:
         hr_24 = self.am_pm_combo.get() == "24 hr"
 
         for row in self.schedule_rows_frame.winfo_children():
-            data = row.winfo_children()
+            row_data = row.winfo_children()
 
-            if len(data) == IND.GAP_CHILD_COUNT: continue
+            if len(row_data) == IND.GAP_CHILD_COUNT: continue
 
-            old_time = prev_tz.localize(datetime.strptime(data[2].cget("text"), "%Y-%m-%d %H:%M" if hr_24 else "%Y-%m-%d %I:%M %p"))
-            data[2].config(text=old_time.astimezone(selected_tz).strftime("%Y-%m-%d %H:%M" if hr_24 else "%Y-%m-%d %I:%M %p"))
+            old_time = prev_tz.localize(datetime.strptime(row_data[2].cget("text"), "%Y-%m-%d %H:%M" if hr_24 else "%Y-%m-%d %I:%M %p"))
+            row_data[2].config(text=old_time.astimezone(selected_tz).strftime("%Y-%m-%d %H:%M" if hr_24 else "%Y-%m-%d %I:%M %p"))
         
         prev_selected_tz = self.timezone_combo.get()
 
@@ -73,12 +73,12 @@ class Scheduler:
         prev_hr_24, curr_hr_24 = prev_selected_hr_type == "24 hr", self.am_pm_combo.get() == "24 hr"
 
         for row in self.schedule_rows_frame.winfo_children():
-            data = row.winfo_children()
+            row_data = row.winfo_children()
 
-            if len(data) == IND.GAP_CHILD_COUNT: continue
+            if len(row_data) == IND.GAP_CHILD_COUNT: continue
 
-            old_time = datetime.strptime(data[2].cget("text"), "%Y-%m-%d %H:%M" if prev_hr_24 else "%Y-%m-%d %I:%M %p")
-            data[2].config(text=old_time.strftime("%Y-%m-%d %H:%M" if curr_hr_24 else "%Y-%m-%d %I:%M %p"))
+            old_time = datetime.strptime(row_data[2].cget("text"), "%Y-%m-%d %H:%M" if prev_hr_24 else "%Y-%m-%d %I:%M %p")
+            row_data[2].config(text=old_time.strftime("%Y-%m-%d %H:%M" if curr_hr_24 else "%Y-%m-%d %I:%M %p"))
         
         prev_selected_hr_type = self.am_pm_combo.get()
 
@@ -115,9 +115,7 @@ class Scheduler:
             # - 1 since rows is already shortened by having them being destroyed
             rows[i].grid_configure(row=len(rows) - i - 1)
 
-    # TODO could probably be better without some redundant datetime transformations
-    def _schedule_mastodon_post(self, message, scheduled_time_utc: int):
-        scheduled_time = datetime.fromtimestamp(scheduled_time_utc, tz=timezone.utc)
+    def _schedule_mastodon_post(self, message, scheduled_time: datetime):
         response = self.mastodon.status_post(message, scheduled_at=scheduled_time, visibility=data.visibility)
 
         return response.id
@@ -198,13 +196,10 @@ class DailyT10Scheduler(Scheduler):
         # Weird index since first row is last child and last row is first child
         # due to reversed insertion order
         row_index = row_count - row.grid_info()["row"] - 1
-
         post_id = row.winfo_children()[1].cget("text")
         
         self.mastodon.scheduled_status_delete(post_id)
-        data.schedules["DailyT10"].pop(
-            next((i for i, row_data in enumerate(data.schedules["DailyT10"]) if row_data["post_id"] == post_id))
-        )
+        del data.schedules["DailyT10"][row_index - len([row for row in schedule_rows if len(row.winfo_children()) == IND.GAP_CHILD_COUNT])]
         
         if row_count == 1:
             row.destroy()
@@ -225,7 +220,7 @@ class DailyT10Scheduler(Scheduler):
 
         elif row_index == 0: # Last row
             if len(schedule_rows[1].winfo_children()) == IND.GAP_CHILD_COUNT:
-                self._update_gap(schedule_rows[row_index - 1])
+                self._update_gap(schedule_rows[1])
                 row.destroy()
             else:
                 self._create_gap(row)
@@ -286,6 +281,9 @@ class DailyT10Scheduler(Scheduler):
         
         gap.winfo_children()[0].config(text=f"{gap_days + 1} day gap")
 
+    def _fill_gap(self, gap: tk.Frame):
+        pass
+
     def _init_schedule_rows(self, rows: list[dict[str, any]]):
         """Initialize the schedule display with a list of rows sorted from oldest to newest."""
         
@@ -303,6 +301,7 @@ class DailyT10Scheduler(Scheduler):
         schedule_data = []
 
         now = datetime.now(tz=pytz.timezone(self.timezone_combo.get())) # TODO adjust for currently selected time
+        selected_timezone = pytz.timezone(self.timezone_combo.get())
 
         gap_amount = (rows[0]["scheduled_time"] - now).days
 
@@ -321,26 +320,29 @@ class DailyT10Scheduler(Scheduler):
 
         row_index = len(schedule_data)
 
-        for data in schedule_data:
+        for row_data in schedule_data:
             row_index -= 1
-
-            if isinstance(data, int):
-                frame = tk.Frame(self.schedule_rows_frame, highlightbackground="gray", highlightthickness=1, pady=5)
-                tk.Label(frame, text=f"{data} day gap").pack()
-                frame.grid(row=row_index, sticky="ew")
-                continue
 
             frame = tk.Frame(self.schedule_rows_frame, highlightbackground="gray", highlightthickness=1, pady=5)
             frame.grid(row=row_index, sticky="ew")
 
-            title_label = tk.Label(frame, text=data["title"], width=20, wraplength=150)
+            if isinstance(row_data, int):
+                frame.grid_columnconfigure(0, weight=1)
+                tk.Label(frame, text=f"{row_data} day gap").grid(row=0, column=0)
+                tk.Button(frame, text="Fill", width=6, command=lambda gap=frame: self._fill_gap(gap)).grid(row=0, column=1, padx=5, sticky="e")
+                continue
+
+            title_label = tk.Label(frame, text=row_data["title"], width=20, wraplength=150)
             title_label.pack(side="left")
 
-            id_label = tk.Label(frame, text=data["post_id"], width=5)
+            id_label = tk.Label(frame, text=row_data["post_id"], width=5)
             id_label.pack(side="left", padx=5)
             
+            # TODO move this in _changed_timezone
+            row_data["scheduled_time"] = row_data["scheduled_time"].astimezone(selected_timezone)
+
             time_label = tk.Label(frame, width=18, text =
-                data["scheduled_time"].strftime("%Y-%m-%d %I:%M %p") if self.am_pm_combo.get() != "24 hr" else data["scheduled_time"].strftime("%Y-%m-%d %H:%M")
+                row_data["scheduled_time"].strftime("%Y-%m-%d %I:%M %p") if self.am_pm_combo.get() != "24 hr" else row_data["scheduled_time"].strftime("%Y-%m-%d %H:%M")
             )
             time_label.pack(side="left", padx=5)
             
@@ -351,8 +353,10 @@ class DailyT10Scheduler(Scheduler):
         for child in row.winfo_children(): # RIP childs
             child.destroy()
         
-        label = tk.Label(row, text="1 day gap")
-        label.pack()
+        row.grid_columnconfigure(0, weight=1)
+        tk.Label(row, text="1 day gap").grid(row=0, column=0)
+        tk.Button(row, text="Fill", width=6, command=lambda gap=row: self._fill_gap(gap)).grid(row=0, column=1, padx=5, sticky="e")
+
 
     def _get_base_scheduled_time(self):
         """Get the next time that a video should be scheduled determined
@@ -384,8 +388,7 @@ class DailyT10Scheduler(Scheduler):
             random_video = random.choice(data.archive)
             message = self._create_post_message(random_video)
 
-            scheduled_time_utc = int(scheduled_time.timestamp())
-            post_id = self._schedule_mastodon_post(message, scheduled_time_utc)
+            post_id = self._schedule_mastodon_post(message, scheduled_time)
 
             self._add_schedule_row(random_video[ARC_I.TITLE], post_id, scheduled_time)
             data.schedules["DailyT10"].append(
@@ -523,21 +526,25 @@ class GeneralScheduler(Scheduler):
             return
 
         row_index = len(schedule_data)
+        selected_timezone = pytz.timezone(self.timezone_combo.get())
 
-        for data in schedule_data:
+        for row_data in schedule_data:
             row_index -= 1
 
             frame = tk.Frame(self.schedule_rows_frame, highlightbackground="gray", highlightthickness=1, pady=5)
             frame.grid(row=row_index, sticky="ew")
 
-            content_label = tk.Label(frame, text=data["content"], width=20, wraplength=150)
+            content_label = tk.Label(frame, text=row_data["content"], width=20, wraplength=150)
             content_label.pack(side="left")
 
-            id_label = tk.Label(frame, text=data["post_id"], width=5)
+            id_label = tk.Label(frame, text=row_data["post_id"], width=5)
             id_label.pack(side="left", padx=5)
+
+            # TODO move this in _changed_timezone
+            row_data["scheduled_time"] = row_data["scheduled_time"].astimezone(selected_timezone)
             
             time_label = tk.Label(frame, width=18, text =
-                data["scheduled_time"].strftime("%Y-%m-%d %I:%M %p") if self.am_pm_combo.get() != "24 hr" else data["scheduled_time"].strftime("%Y-%m-%d %H:%M")
+                row_data["scheduled_time"].strftime("%Y-%m-%d %I:%M %p") if self.am_pm_combo.get() != "24 hr" else row_data["scheduled_time"].strftime("%Y-%m-%d %H:%M")
             )
             time_label.pack(side="left", padx=5)
             
@@ -550,13 +557,12 @@ class GeneralScheduler(Scheduler):
         hour = int(self.hour_entry.get())
         hour = (hour % 12) + 12 if self.am_pm_combo.get() == "PM" else hour % 12 if self.am_pm_combo.get() == "AM" else hour
 
-        time = dt_time(hour, int(self.minute_entry.get()))
-        scheduled_time = datetime.combine(scheduled_time, time, pytz.timezone(self.timezone_combo.get()))
+        time_component = dt_time(hour, int(self.minute_entry.get()))
+        scheduled_time = datetime.combine(date=scheduled_time, time=time_component)
+        scheduled_time = pytz.timezone(self.timezone_combo.get()).localize(scheduled_time)
 
-        scheduled_time = scheduled_time.astimezone(pytz.timezone(self.timezone_combo.get()))
-        
         content = self._content_entry.get("1.0", tk.END)
-        post_id = self._schedule_mastodon_post(content, int(scheduled_time.timestamp()))
+        post_id = self._schedule_mastodon_post(content, scheduled_time)
 
         scheduled_timestamp = scheduled_time.timestamp()
         i = next((i for i, entry_data in enumerate(data.schedules["General"]) if entry_data["scheduled_time"].timestamp() > scheduled_timestamp), len(data.schedules["General"]))
@@ -572,16 +578,12 @@ class GeneralScheduler(Scheduler):
     def _remove_row(self, row: tk.Frame):
         schedule_rows = self.schedule_rows_frame.winfo_children()
         row_count = len(schedule_rows)
-        post_id = row.winfo_children()[SCH_I.ID].cget("text")
         
-        self.mastodon.scheduled_status_delete(post_id)
-
-        # TODO could probably optimize using row_index instead
-        data.schedules["General"].pop(
-            next((i for i, row_data in enumerate(data.schedules["General"]) if row_data["post_id"] == post_id))
-        )
-
         row_index = row_count - row.grid_info()["row"] - 1
+        post_id = row.winfo_children()[SCH_I.ID].cget("text")
+
+        self.mastodon.scheduled_status_delete(post_id)
+        del data.schedules["General"][row_index]
         
         row.destroy()
         

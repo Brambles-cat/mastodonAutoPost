@@ -17,7 +17,7 @@ class ScheduleIndices:
     TIMESTAMP = 2
 
 class Indicators:
-    GAP_CHILD_COUNT = 1
+    GAP_CHILD_COUNT = 2
 
 load_dotenv()
 
